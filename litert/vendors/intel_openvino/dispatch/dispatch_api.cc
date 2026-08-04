@@ -38,6 +38,7 @@
 #include "litert/vendors/c/litert_dispatch_api.h"
 #include "litert/vendors/intel_openvino/dispatch/device_context.h"
 #include "litert/vendors/intel_openvino/dispatch/invocation_context.h"
+#include "litert/vendors/intel_openvino/dispatch/openvino_shared_core.h"
 #include "litert/vendors/intel_openvino/dispatch/openvino_tensor_buffer.h"
 
 namespace litert {
@@ -306,6 +307,7 @@ LiteRtStatus DispatchInvocationContextCreate(
       return context.Error().Status();
     }
     *invocation_context = context->release();
+    OpenVINOSharedCore::GetInstance()->Acquire();
     return kLiteRtStatusOk;
   } catch (const ov::Exception& e) {
     LITERT_LOG(LITERT_ERROR,
@@ -317,6 +319,7 @@ LiteRtStatus DispatchInvocationContextCreate(
 LiteRtStatus DispatchInvocationContextDestroy(
     LiteRtDispatchInvocationContext invocation_context) {
   delete invocation_context;
+  OpenVINOSharedCore::GetInstance()->Release();
   return kLiteRtStatusOk;
 }
 

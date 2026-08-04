@@ -35,21 +35,50 @@ class OpenVINOSharedCore {
 
   static OpenVINOSharedCore* GetInstance();
 
-  // Return the core shared_pointer.
-  std::shared_ptr<ov::Core> getCore() const { return core_; }
+  // Returns the shared OpenVINO core, creating it on first use.
+  std::shared_ptr<ov::Core> GetCore() {
+    absl::MutexLock lock(state_mutex_);
+    EnsureCore();
+    return core_;
+  }
 
-  void SetDevice(const std::string device) {
-    absl::MutexLock lock(&state_mutex_);
+  // Alias for GetCore().
+  std::shared_ptr<ov::Core> getCore() { return GetCore(); }
+
+  // Increments the reference count tracking active invocation contexts.
+  void Acquire() {
+    absl::MutexLock lock(state_mutex_);
+    ++ref_count_;
+  }
+
+  // Decrements the reference count. Once the last reference is released, the
+  // remote context is cleared and the shared core is recreated so the next
+  // acquisition starts from a clean state.
+  void Release() {
+    absl::MutexLock lock(state_mutex_);
+    if (--ref_count_ <= 0) {
+      ref_count_ = 0;
+      remote_context_.reset();
+      // Destroy the existing core before creating a new one so the underlying
+      // hardware resources are fully released first.
+      core_.reset();
+      core_ = std::make_shared<ov::Core>();
+    }
+  }
+
+  void SetDevice(const std::string& device) {
+    absl::MutexLock lock(state_mutex_);
     device_ = device;
     remote_context_.reset();
   }
   std::string GetDevice() {
-    absl::MutexLock lock(&state_mutex_);
+    absl::MutexLock lock(state_mutex_);
     return device_;
   }
 
   ov::RemoteContext GetRemoteContext() {
-    absl::MutexLock lock(&state_mutex_);
+    absl::MutexLock lock(state_mutex_);
+    EnsureCore();
     if (!remote_context_.has_value()) {
       remote_context_ = core_->get_default_context(device_);
     }
@@ -67,12 +96,21 @@ class OpenVINOSharedCore {
   OpenVINOSharedCore();
   ~OpenVINOSharedCore();
 
-  std::shared_ptr<ov::Core> core_;
-  // Guards device_ and remote_context_.
+  // Creates the shared core if it does not exist yet. Callers must hold
+  // `state_mutex_`.
+  void EnsureCore() ABSL_EXCLUSIVE_LOCKS_REQUIRED(state_mutex_) {
+    if (core_ == nullptr) {
+      core_ = std::make_shared<ov::Core>();
+    }
+  }
+
+  // Guards core_, device_, remote_context_, and ref_count_.
   absl::Mutex state_mutex_;
+  std::shared_ptr<ov::Core> core_ ABSL_GUARDED_BY(state_mutex_);
   std::string device_ ABSL_GUARDED_BY(state_mutex_) = "NPU";  // Default device
   std::optional<ov::RemoteContext> remote_context_
       ABSL_GUARDED_BY(state_mutex_);
+  int ref_count_ ABSL_GUARDED_BY(state_mutex_) = 0;
   std::once_flag available_devices_once_;
   std::vector<std::string> available_devices_;
 };

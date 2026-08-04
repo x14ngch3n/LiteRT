@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "litert/vendors/intel_openvino//dispatch/openvino_shared_core.h"
+#include "litert/vendors/intel_openvino/dispatch/openvino_shared_core.h"
 
 #include <exception>
 #include <memory>
@@ -36,7 +36,7 @@ OpenVINOSharedCore* OpenVINOSharedCore::GetInstance() {
 const std::vector<std::string>& OpenVINOSharedCore::GetAvailableDevices() {
   std::call_once(available_devices_once_, [this]() {
     try {
-      available_devices_ = core_->get_available_devices();
+      available_devices_ = GetCore()->get_available_devices();
     } catch (const std::exception&) {
       available_devices_.clear();
     }
