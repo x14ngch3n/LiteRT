@@ -19,6 +19,7 @@
 #include <variant>
 #include <vector>
 
+#include "xnnpack.h"  // from @XNNPACK
 #include "absl/container/flat_hash_map.h"  // from @com_google_absl
 #include "absl/log/absl_log.h"  // from @com_google_absl
 #include "absl/log/log.h"  // from @com_google_absl
@@ -78,12 +79,12 @@ void PopulateQuantizedAttributes(const TfLiteTensor* weights_tensor,
   // Once we have RearrangeWeightsPacked supported for all layouts, we can
   // remove this unpacking.
   if (weights_tensor->type == kTfLiteInt4) {
-    std::vector<int8_t> unpacked_data(num_elements);
+    std::vector<int8_t> unpacked_data(num_elements + XNN_EXTRA_BYTES);
     ::ml_drift::UnpackDenseInt4IntoInt8(weights.data.data(), num_elements,
                                         unpacked_data.data());
     fc_weights.data = std::move(unpacked_data);
   } else if (weights_tensor->type == kTfLiteInt2) {
-    std::vector<int8_t> unpacked_data(num_elements);
+    std::vector<int8_t> unpacked_data(num_elements + XNN_EXTRA_BYTES);
     ::ml_drift::UnpackDenseInt2IntoInt8(weights.data.data(), num_elements,
                                         unpacked_data.data());
     fc_weights.data = std::move(unpacked_data);
@@ -289,10 +290,25 @@ void ConvertFullyConnected(
       // Plain float fully-connected: embed the (possibly empty) const bias.
       // Keeping this move of `bias` in the same if/else as the quantized path
       // makes the two consumers provably mutually exclusive.
-      fc_op->name = ToString(::ml_drift::OperationType::FULLY_CONNECTED);
-      ::ml_drift::FullyConnectedAttributes attr;
-      attr.bias = std::move(bias);
-      fc_op->attr = std::move(attr);
+      if (input_shape.h != 1 || input_shape.w != 1) {
+        fc_op->name = ToString(::ml_drift::OperationType::CONVOLUTION_2D);
+        ::ml_drift::Convolution2DAttributes conv_attr;
+        conv_attr.strides = ::ml_drift::HW(1, 1);
+        conv_attr.dilations = ::ml_drift::HW(1, 1);
+        conv_attr.padding.appended = ::ml_drift::HW(0, 0);
+        conv_attr.padding.prepended = ::ml_drift::HW(0, 0);
+        conv_attr.groups = 1;
+        auto& w = conv_attr.weights.emplace<::ml_drift::Tensor<
+            ::ml_drift::OHWI, ::ml_drift::DataType::FLOAT32>>();
+        w.shape = ::ml_drift::OHWI(output_shape.c, 1, 1, input_shape.c);
+        conv_attr.bias = std::move(bias);
+        fc_op->attr = std::move(conv_attr);
+      } else {
+        fc_op->name = ToString(::ml_drift::OperationType::FULLY_CONNECTED);
+        ::ml_drift::FullyConnectedAttributes attr;
+        attr.bias = std::move(bias);
+        fc_op->attr = std::move(attr);
+      }
     }
 
     // While we check if const weights are (o, 1, 1, i) sh, we don't for
